@@ -1,0 +1,73 @@
+'''model extending django default user'''
+#model.py
+
+from django.contrib.auth.models import AbstractUser
+from django.db import models
+
+class CustomUser(AbstractUser):
+    
+    phone_number = models.CharField(max_length=15, blank=True)
+
+class UserImage(models.Model):
+    user = models.ForeignKey(CustomUser, related_name='images', on_delete=models.CASCADE)
+    image = models.ImageField(upload_to='user_images/')
+    upload_time = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.user.username} - {self.image.name}"
+
+'''create a view for user to be able to upload an image'''
+#serializers.py
+
+
+
+from rest_framework import serializers
+from .models import CustomUser, UserImage
+
+class UserImageSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = UserImage
+        fields = ['id', 'image', 'upload_time']
+
+class CustomUserSerializer(serializers.ModelSerializer):
+    images = UserImageSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = CustomUser
+        fields = ['id', 'username', 'email', 'phone_number', 'images']
+
+'''create a view only for user'''
+#views.py
+
+
+from rest_framework import generics, permissions
+from rest_framework.parsers import MultiPartParser, FormParser
+from .models import CustomUser, UserImage
+from .serializers import UserImageSerializer, CustomUserSerializer
+from .tasks import process_image
+
+class UserDetailView(generics.RetrieveUpdateAPIView):
+    queryset = CustomUser.objects.all()
+    serializer_class = CustomUserSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_object(self):
+        return self.request.user
+
+class UserImageUploadView(generics.CreateAPIView):
+    queryset = UserImage.objects.all()
+    serializer_class = UserImageSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def perform_create(self, serializer):
+        user = self.request.user
+        image = serializer.save(user=user)
+        process_image.delay(image.id)  # Calling the Celery task
+
+class UserImageListView(generics.ListAPIView):
+    serializer_class = UserImageSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return UserImage.objects.filter(user=self.request.user)
